@@ -160,14 +160,16 @@ INSERT INTO dim_customer (
     age,
     email, 
     country_id, 
-    postal_code)
+    postal_code,
+    pet_id)
 SELECT DISTINCT
 	t.customer_first_name,
 	t.customer_last_name,
 	t.customer_age,
 	t.customer_email,
 	c.country_id,
-	t.customer_postal_code 
+	t.customer_postal_code,
+    pet.pet_id
 FROM raw_data t
 LEFT JOIN dim_country c ON c.country = t.customer_country 
 LEFT JOIN dim_pet pet 
