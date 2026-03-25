@@ -94,12 +94,17 @@ SELECT DISTINCT value FROM (
 ) ON CONFLICT (country) DO NOTHING;
 
 
-INSERT INTO dim_city (city)
-SELECT DISTINCT value FROM (
-    SELECT t.store_city AS value FROM raw_data t
+INSERT INTO dim_city (city, country_id)
+SELECT DISTINCT
+    city,
+    dc.country_id
+FROM (
+    SELECT t.store_city AS city, t.store_country AS country FROM raw_data t
     UNION ALL
-    SELECT t.supplier_city FROM raw_data t
-) ON CONFLICT (city) DO NOTHING;
+    SELECT t.supplier_city AS city, t.supplier_country AS country FROM raw_data t
+) AS cities
+LEFT JOIN dim_country dc ON dc.country = cities.country
+ON CONFLICT (city, country_id) DO NOTHING;
 
 
 INSERT INTO dim_date (
@@ -122,6 +127,16 @@ FROM (
     SELECT t.sale_date FROM raw_data t
 ) ON CONFLICT (date) DO NOTHING;
 
+INSERT INTO dim_date (date, year, month, day, quarter)
+SELECT 
+    MAKE_DATE(year, 1, 1) AS date,
+    year,
+    1 AS month,
+    1 AS day,
+    1 AS quarter
+FROM generate_series(1900, 2030) AS year
+ON CONFLICT (date) DO NOTHING;
+
 
 INSERT INTO dim_seller (
     first_name, 
@@ -129,7 +144,7 @@ INSERT INTO dim_seller (
     email, 
     country_id, 
     postal_code)
-SELECT DISTINCT
+SELECT
 	t.seller_first_name,
 	t.seller_last_name,
 	t.seller_email,
@@ -140,46 +155,41 @@ LEFT JOIN dim_country c ON c.country = t.seller_country
 ON CONFLICT (email) DO NOTHING;
 
 
+INSERT INTO dim_customer (
+    first_name, 
+    last_name, 
+    birth_date,
+    email, 
+    country_id, 
+    postal_code)
+SELECT
+	t.customer_first_name,
+	t.customer_last_name,
+    DATE_TRUNC('year', 
+        CURRENT_DATE - (t.customer_age || ' years')::INTERVAL)::DATE AS birth_date,
+	t.customer_email,
+	c.country_id,
+	t.customer_postal_code
+FROM raw_data t
+LEFT JOIN dim_country c ON c.country = t.customer_country 
+ON CONFLICT (email) DO NOTHING;
+
+
 INSERT INTO dim_pet(
 	category,
 	breed,
 	name,
-	type)
+	type,
+    owner_id)
 SELECT
 t.pet_category,
 t.customer_pet_breed,
 t.customer_pet_name,
-t.customer_pet_type
+t.customer_pet_type,
+c.customer_id
 FROM raw_data t
-ON CONFLICT (category, breed, name) DO NOTHING;
-
-
-INSERT INTO dim_customer (
-    first_name, 
-    last_name, 
-    age,
-    email, 
-    country_id, 
-    postal_code,
-    pet_id)
-SELECT DISTINCT
-	t.customer_first_name,
-	t.customer_last_name,
-	t.customer_age,
-	t.customer_email,
-	c.country_id,
-	t.customer_postal_code,
-    pet.pet_id
-FROM raw_data t
-LEFT JOIN dim_country c ON c.country = t.customer_country 
-LEFT JOIN dim_pet pet 
-	ON  pet.category = t.pet_category
-	AND pet.breed = t.customer_pet_breed
-	AND pet.name = t.customer_pet_name
-	AND pet.type = t.customer_pet_type
-
-ON CONFLICT (email) DO NOTHING;
-
+LEFT JOIN dim_customer c ON c.email = t.customer_email 
+ON CONFLICT (owner_id, category, breed, name) DO NOTHING;
 
 INSERT INTO dim_product (
     name,
@@ -195,13 +205,13 @@ INSERT INTO dim_product (
     reviews,
     release_date,
     expiry_date)
-SELECT DISTINCT
+SELECT
 	t.product_name,
 	t.product_category,
 	t.product_price,
 	t.product_weight,
 	t.product_color,
-	t.product_size,
+	t.product_size::PROD_SIZE,
 	t.product_brand,
 	t.product_material,
 	t.product_description,
@@ -217,7 +227,6 @@ INSERT INTO dim_store (
     location,
     state,
     city_id,
-    country_id,
     phone,
     email)
 SELECT
@@ -225,12 +234,11 @@ SELECT
 	t.store_location,
 	t.store_state,
 	cc.city_id,
-	c.country_id,
 	t.store_phone,
 	t.store_email 
 FROM raw_data t
-LEFT JOIN dim_country c ON c.country = t.store_country 
-LEFT JOIN dim_city cc ON cc.city = t.store_city 
+LEFT JOIN dim_country c ON c.country = t.store_country
+LEFT JOIN dim_city cc ON cc.city = t.store_city AND cc.country_id = c.country_id 
 ON CONFLICT (email) DO NOTHING;
 
 
@@ -240,25 +248,23 @@ INSERT INTO dim_supplier (
 	email,
 	phone,
 	address,
-	city_id,
-	country_id)
+	city_id)
 SELECT
 	t.supplier_name ,
 	t.supplier_contact ,
 	t.supplier_email ,
 	t.supplier_phone ,
 	t.supplier_address ,
-	cc.city_id,
-	c.country_id
+	cc.city_id
 FROM raw_data t
 LEFT JOIN dim_country c ON c.country = t.supplier_country 
-LEFT JOIN dim_city cc ON cc.city = t.supplier_city 
+LEFT JOIN dim_city cc ON cc.city = t.supplier_city AND cc.country_id = c.country_id
 ON CONFLICT (email) DO NOTHING;
 
 
 INSERT INTO fact_sales (
-    sale_id,
-	customer_id,
+--	customer_id,
+    pet_id,
 	seller_id,
 	product_id,
 	store_id,
@@ -268,9 +274,9 @@ INSERT INTO fact_sales (
 	sale_total_price
 )
 SELECT
-    t.sale_id,
-	sc.customer_id,
+--	sc.customer_id,
     ss.seller_id,
+    pet.pet_id,
 	prod.product_id,
 	ds.store_id,
 	ds2.supplier_id,
@@ -279,6 +285,7 @@ SELECT
 	t.sale_total_price
 FROM raw_data t
 LEFT JOIN dim_customer sc ON sc.email = t.customer_email 
+LEFT JOIN dim_pet pet ON pet.owner_id = sc.customer_id 
 LEFT JOIN dim_seller ss ON ss.email = t.seller_email 
 LEFT JOIN dim_product prod 
     ON prod.price = t.product_price 
