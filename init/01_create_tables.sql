@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS dim_customer (
     last_name VARCHAR(50),
     age INT,
     email VARCHAR(100) UNIQUE,
-    country_id INT,
+    country_id INT REFERENCES dim_country(country_id),
     postal_code VARCHAR(20),
     pet_id INT REFERENCES dim_pet(pet_id)
 );
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS dim_seller (
     first_name VARCHAR(50),
     last_name VARCHAR(50),
     email VARCHAR(100) UNIQUE,
-    country_id INT,
+    country_id INT REFERENCES dim_country(country_id),
     postal_code VARCHAR(20)
 );
 
@@ -68,8 +68,8 @@ CREATE TABLE IF NOT EXISTS dim_store (
     name VARCHAR(100),
     location VARCHAR(100),
     state VARCHAR(50),
-    city_id INT,
-    country_id INT,
+    city_id INT REFERENCES dim_city(city_id),
+    country_id INT REFERENCES dim_country(country_id),
     phone VARCHAR(20),
     email VARCHAR(100) UNIQUE
 );
@@ -81,8 +81,8 @@ CREATE TABLE IF NOT EXISTS dim_supplier (
     email VARCHAR(100) UNIQUE,
     phone VARCHAR(20),
     address VARCHAR(200),
-    city_id INT,
-    country_id INT
+    city_id INT REFERENCES dim_city(city_id),
+    country_id INT REFERENCES dim_country(country_id)
 );
 
 
