@@ -1,5 +1,5 @@
+-- TODO: fix using correct product_id, seller_id, customer_id 
 CREATE TABLE raw_data (
-    sale_id SERIAL PRIMARY KEY,
     id INT,
     customer_first_name VARCHAR,
     customer_last_name VARCHAR,
@@ -52,33 +52,31 @@ CREATE TABLE raw_data (
     supplier_country VARCHAR
 );
 
+CREATE TEMP TABLE staging_table AS SELECT * FROM raw_data WITH NO DATA;
+
 DO $$
 DECLARE
     i INT;
+    offset_val INT;
+    file_path TEXT;
 BEGIN
     FOR i IN 0..9 LOOP
-        EXECUTE format('
-            COPY raw_data (
-                id, customer_first_name, customer_last_name, customer_age,
-                customer_email, customer_country, customer_postal_code,
-                customer_pet_type, customer_pet_name, customer_pet_breed,
-                seller_first_name, seller_last_name, seller_email,
-                seller_country, seller_postal_code, product_name,
-                product_category, product_price, product_quantity, sale_date,
-                sale_customer_id, sale_seller_id, sale_product_id, sale_quantity,
-                sale_total_price, store_name, store_location, store_city,
-                store_state, store_country, store_phone, store_email,
-                pet_category, product_weight, product_color, product_size,
-                product_brand, product_material, product_description,
-                product_rating, product_reviews, product_release_date,
-                product_expiry_date, supplier_name, supplier_contact,
-                supplier_email, supplier_phone, supplier_address,
-                supplier_city, supplier_country
-            )
-            FROM ''/docker-entrypoint-initdb.d/raw_data/MOCK_DATA (%1$s).csv''
-            DELIMITER '',''
-            CSV HEADER;
-        ', i);
+        offset_val := i * 1000;
+        file_path := '/data/MOCK_DATA (' || i || ').csv';
+
+        TRUNCATE staging_table;
+
+        EXECUTE format('COPY staging_table FROM %L WITH (FORMAT csv, HEADER true)', file_path);
+
+        UPDATE staging_table SET 
+            id = id + offset_val, 
+            sale_customer_id = sale_customer_id + offset_val, 
+            sale_seller_id = sale_seller_id + offset_val, 
+            sale_product_id = sale_product_id + offset_val;
+        
+        INSERT INTO raw_data SELECT * FROM staging_table;
+        
+        RAISE NOTICE 'Processed file %', file_path;
     END LOOP;
 END $$;
 
@@ -97,7 +95,7 @@ SELECT DISTINCT value FROM (
 INSERT INTO dim_city (city, country_id)
 SELECT DISTINCT
     city,
-    dc.country_id
+    dc.id
 FROM (
     SELECT t.store_city AS city, t.store_country AS country FROM raw_data t
     UNION ALL
@@ -139,59 +137,52 @@ ON CONFLICT (date) DO NOTHING;
 
 
 INSERT INTO dim_seller (
+    id,
     first_name, 
     last_name, 
     email, 
     country_id, 
     postal_code)
 SELECT
+	t.sale_seller_id,
 	t.seller_first_name,
 	t.seller_last_name,
 	t.seller_email,
-	c.country_id,
+	c.id,
 	t.seller_postal_code 
 FROM raw_data t
-LEFT JOIN dim_country c ON c.country = t.seller_country 
-ON CONFLICT (email) DO NOTHING;
+LEFT JOIN dim_country c ON c.country = t.seller_country;
 
 
 INSERT INTO dim_customer (
+    id,
     first_name, 
     last_name, 
     birth_date,
     email, 
     country_id, 
-    postal_code)
+    postal_code,
+    pet_breed,
+    pet_type,
+    pet_name)
 SELECT
+	t.sale_customer_id,
 	t.customer_first_name,
 	t.customer_last_name,
     DATE_TRUNC('year', 
         CURRENT_DATE - (t.customer_age || ' years')::INTERVAL)::DATE AS birth_date,
 	t.customer_email,
-	c.country_id,
-	t.customer_postal_code
+	c.id,
+	t.customer_postal_code,
+    t.customer_pet_breed,
+    t.customer_pet_type,
+    t.customer_pet_name
 FROM raw_data t
-LEFT JOIN dim_country c ON c.country = t.customer_country 
-ON CONFLICT (email) DO NOTHING;
+LEFT JOIN dim_country c ON c.country = t.customer_country;
 
-
-INSERT INTO dim_pet(
-	category,
-	breed,
-	name,
-	type,
-    owner_id)
-SELECT
-t.pet_category,
-t.customer_pet_breed,
-t.customer_pet_name,
-t.customer_pet_type,
-c.customer_id
-FROM raw_data t
-LEFT JOIN dim_customer c ON c.email = t.customer_email 
-ON CONFLICT (owner_id, category, breed, name) DO NOTHING;
 
 INSERT INTO dim_product (
+    id,
     name,
     category,
     price,
@@ -206,6 +197,7 @@ INSERT INTO dim_product (
     release_date,
     expiry_date)
 SELECT
+    t.sale_product_id,
 	t.product_name,
 	t.product_category,
 	t.product_price,
@@ -233,12 +225,12 @@ SELECT
 	t.store_name,
 	t.store_location,
 	t.store_state,
-	cc.city_id,
+	cc.id,
 	t.store_phone,
 	t.store_email 
 FROM raw_data t
 LEFT JOIN dim_country c ON c.country = t.store_country
-LEFT JOIN dim_city cc ON cc.city = t.store_city AND cc.country_id = c.country_id 
+LEFT JOIN dim_city cc ON cc.city = t.store_city AND cc.country_id = c.id 
 ON CONFLICT (email) DO NOTHING;
 
 
@@ -255,16 +247,15 @@ SELECT
 	t.supplier_email ,
 	t.supplier_phone ,
 	t.supplier_address ,
-	cc.city_id
+	cc.id
 FROM raw_data t
 LEFT JOIN dim_country c ON c.country = t.supplier_country 
-LEFT JOIN dim_city cc ON cc.city = t.supplier_city AND cc.country_id = c.country_id
+LEFT JOIN dim_city cc ON cc.city = t.supplier_city AND cc.country_id = c.id
 ON CONFLICT (email) DO NOTHING;
 
 
 INSERT INTO fact_sales (
---	customer_id,
-    pet_id,
+	customer_id,
 	seller_id,
 	product_id,
 	store_id,
@@ -274,23 +265,14 @@ INSERT INTO fact_sales (
 	sale_total_price
 )
 SELECT
---	sc.customer_id,
-    ss.seller_id,
-    pet.pet_id,
-	prod.product_id,
-	ds.store_id,
-	ds2.supplier_id,
+    t.sale_customer_id,
+    t.sale_seller_id,
+    t.sale_product_id,
+	ds.id,
+	ds2.id,
 	t.sale_date,
 	t.sale_quantity,
 	t.sale_total_price
 FROM raw_data t
-LEFT JOIN dim_customer sc ON sc.email = t.customer_email 
-LEFT JOIN dim_pet pet ON pet.owner_id = sc.customer_id 
-LEFT JOIN dim_seller ss ON ss.email = t.seller_email 
-LEFT JOIN dim_product prod 
-    ON prod.price = t.product_price 
-    AND prod.brand = t.product_brand
-    AND prod.weight = t.product_weight
 LEFT JOIN dim_store ds ON ds.email = t.store_email 
-LEFT JOIN dim_supplier ds2 ON ds2.email = t.supplier_email 
-ON CONFLICT (sale_id) DO NOTHING;
+LEFT JOIN dim_supplier ds2 ON ds2.email = t.supplier_email;
